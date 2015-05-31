@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from DivideAndSlurm import Task as _Task
+from divideAndSlurm import Task as _Task
 
 
 class CountDistances(_Task):

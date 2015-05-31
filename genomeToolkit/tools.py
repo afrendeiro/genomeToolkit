@@ -31,8 +31,8 @@ def loadPandas(filename, mmap_mode='r'):
     """
     Load DataFrame or Series.
 
-    :param filename : Filename to use
-    :type filename : str
+    :param filename: Filename to use
+    :type filename: str
     :param mmap_mode: Same as np.load option
     :type mmap_mode: str
     :returns: `pandas.DataFrame` or `pandas.Series` object
@@ -308,7 +308,7 @@ def smooth(x, window_len=8, window='hanning'):
         x: the input signal
         window_len: the dimension of the smoothing window; should be an odd integer
         window: the type of window from 'flat', 'hanning', 'hamming', 'bartlett', 'blackman'
-            flat window will produce a moving average smoothing.
+        flat window will produce a moving average smoothing.
 
     output:
         the smoothed signal
