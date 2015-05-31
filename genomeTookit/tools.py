@@ -707,3 +707,69 @@ def bedToolsInterval2GenomicInterval(bedtool, strand=True, name=True):
                 regions["_".join(iv.fields[:3])] = HTSeq.GenomicInterval(iv.chrom, iv.start, iv.end)
 
     return regions
+
+
+def splitAndSortDict(regions):
+    """
+    Splits dictionary keys in chrom, start, end; sorts dict based on that and returns  object.
+
+    :param regions: Dict where keys are strings that when separated by "_" give a chrom (string), start and end (both ints).
+    :type regions: dict
+    :returns: `collections.OrderedDict` sorted by chrom, start, end.
+    :rtype: collections.OrderedDict
+    """
+    from collections import OrderedDict
+
+    b = {(key.split("_")[0], int(key.split("_")[1]), int(key.split("_")[2])): value for key, value in regions.items()}
+    return OrderedDict(sorted(b.items(), key=lambda x: (x[0][0], x[0][1])))
+
+
+def exportWigFile(intervals, profiles, filename, trackname, offset=0):
+    """
+    Exports a wig file track with scores contained in profile, for every interval.
+    Both intervals and profiles need to be sorted by the same order.
+
+    :param intervals: Iterable with HTSeq.GenomicInterval objects.
+    :type intervals: list
+    :param profiles: Iterable with scores.
+    :type profiles: list
+    :param offset: Offset value.
+    :type offset: int
+    :param filename: Name of wig file.
+    :type filename: str
+    :param trackname: Name of track.
+    :type trackname: str
+    """
+    with open(filename, 'w') as handle:
+        track = 'track type=wiggle_0 name="{0}" description="{0}" visibility=dense autoScale=off\n'.format(trackname)
+        handle.write(track)
+        for i in xrange(len(profiles)):
+            header = "fixedStep  chrom={0}  start={1}  step=1\n".format(intervals[i].chrom, intervals[i].start + offset)
+            handle.write(header)
+            for j in xrange(len(profiles[i])):
+                handle.write(str(abs(profiles[i][j])) + "\n")
+
+
+def exportBedFile(intervals, filename, trackname):
+    """
+    Exports a bed file track from dict with genomic positions.
+
+    :param intervals: chrom:(start, end) dict.
+    :type intervals: dict.
+    :param filename: Name of bed file to write.
+    :type filename: str
+    :param trackname: Name of track.
+    :type trackname: str
+    """
+    with open(filename, 'w') as handle:
+        header = 'track name="{0}" description="{0}" visibility=pack autoScale=off colorByStrand="255,0,0 0,0,255"\n'.format(trackname)
+        handle.write(header)
+        for chrom, (start, end) in intervals.items():
+            name = "{0}_{1}_{2}".format(chrom, start, end)
+            entry = "{0}\t{1}\t{2}\t{3}\t{4}\t{5}\n".format(
+                chrom, start, end,
+                name,  # name
+                1,  # score
+                "."  # strand
+            )
+            handle.write(entry)
