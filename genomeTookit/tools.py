@@ -773,3 +773,101 @@ def exportBedFile(intervals, filename, trackname):
                 "."  # strand
             )
             handle.write(entry)
+
+
+def concatenateSignal(regions, patternLength, debug=False):
+    """
+    Concatenates arrays of values from consecutive genome windows.
+
+    :param regions: Dict with region names as keys and 1D numpy.array as values.
+    :type regions: dict
+    :param patternLength: Length of pattern used to create binary correlation peaks.
+    :type patternLength: int
+    :type debug: bool
+    :returns: Returns dict of chr:signal.
+    :rtype: dict
+    """
+    from collections import OrderedDict
+    import numpy as np
+
+    # TODO: make sure windows are sorted alphanumerically
+    items = regions.items()
+    binaries = OrderedDict()
+    prev_chrom = ""
+    prev_end = 1
+
+    for i in xrange(len(items)):
+        window, sequence = items[i]
+        chrom, start, end = (str(window[0]), int(window[1]), int(window[2]))
+        if debug:
+            name = "_".join([str(j) for j in window])
+            print name, (chrom, start, end)
+        if not chrom == prev_chrom:  # new chromossome
+            binaries[chrom] = sequence
+        else:  # same chromossome as before
+            if window == items[-1][0]:  # if last window just append remaining
+                if debug:
+                    print("Last of all")
+                binaries[chrom] = np.hstack((binaries[chrom], sequence))
+            elif items[i + 1][0][0] != chrom:  # if last window in chromossome, just append remaining
+                if debug:
+                    print("Last of chromossome")
+                binaries[chrom] = np.hstack((binaries[chrom], sequence))
+            else:  # not last window
+                if prev_end - patternLength == start:  # windows are continuous
+                    if len(sequence) == (end - start) - patternLength + 1:
+                        binaries[chrom] = np.hstack((binaries[chrom], sequence))
+                    elif len(sequence) > (end - start) - patternLength + 1:
+                        if debug:
+                            print(name, len(sequence), (end - start) - patternLength + 1)
+                        raise ValueError("Sequence is bigger than its coordinates.")
+                    elif len(sequence) < (end - start) - patternLength + 1:
+                        if debug:
+                            print(name, len(sequence), (end - start) - patternLength + 1)
+                        raise ValueError("Sequence is shorter than its coordinates.")
+                else:
+                    if debug:
+                        print(name, prev_end, start)
+                    raise ValueError("Windows are not continuous or some are missing.")
+
+        prev_chrom = chrom
+        prev_end = end
+    return binaries
+
+
+def getReadType(bamFile, n=10):
+    """
+    Gets the read type (single="SE", paired="PE") and length of reads in bam file.
+
+    :param bamFile: Bam file.
+    :type bamFile: str
+    :param n: Number of reads to use to estimate type and length.
+    :type n: int
+    :returns: tuple of (readType=string, readLength=int).
+    :rtype: tuple
+    """
+    from collections import Counter
+    import subprocess
+
+    p = subprocess.Popen(['samtools', 'view', bamFile], stdout=subprocess.PIPE)
+
+    # Count paired alignments
+    paired = 0
+    readLength = Counter()
+    while n > 0:
+        line = p.stdout.next().split("\t")
+        flag = int(line[1])
+        readLength[len(line[9])] += 1
+        if 1 & flag:  # check decimal flag contains 1 (paired)
+            paired += 1
+        n -= 1
+    p.kill()
+
+    # Get most abundant read readLength
+    readLength = sorted(readLength)[-1]
+
+    # If at least half is paired, return True
+    if paired > (n / 2):
+        return ("PE", readLength)
+    else:
+        return ("SE", readLength)
