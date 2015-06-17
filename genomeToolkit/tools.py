@@ -871,3 +871,83 @@ def getReadType(bamFile, n=10):
         return ("PE", readLength)
     else:
         return ("SE", readLength)
+
+
+def gostats(genes, universe, direction, ontology, pvalue=0.01, species="Mm"):
+    """
+    Perform gene ontology enrichment with GOstats.
+
+    :param genes: Iterable of genes to test enrichment of GO terms.
+    :type genes: iterable
+    :param universe:
+    :type universe: iterable
+    :param direction: Direction to test representation. Either "over" or "under".
+    :type direction: str
+    :param ontology: Ontology to test. Either "BP", "MF" or "CC".
+    :type ontology: str
+    :param pvalue: P-value cut-off of enrichment. Default=0.01
+    :type pvalue: float
+    :param species: Initials of the species. Default "Mm".
+    :type species: str
+    """
+    import rpy2.robjects as robj  # for ggplot in R
+    import numpy as np
+    import pandas as pd
+
+    species = species[0].upper() + species[1].lower()
+
+    # R function
+    gostatsR = robj.r("""
+        # load libraries
+        library('GOstats')
+        library('org.Mm.eg.db')
+
+        GO.analysis = function(genes, universe, direction, ontology, pvalue=0.01){
+
+            # convert genes ids
+            egSYMBOL = toTable(org.Mm.egSYMBOL)
+            genes = egSYMBOL$gene_id[which(genes %in% egSYMBOL$symbol)]
+            universe = egSYMBOL$gene_id[which(universe %in% egSYMBOL$symbol)]
+
+            Test = NA
+            # see if genes are in universe
+            if (length(genes[genes %in% universe])>0) {
+                # make parameter object
+                params = new(
+                    "GOHyperGParams",
+                    geneIds=genes,
+                    universeGeneIds=universe,
+                    annotation="org.Mm.eg.db",
+                    ontology="BP",
+                    pvalueCutoff=pvalue,
+                    conditional=FALSE,
+                    testDirection="over"
+                )
+                # run test
+                Test = hyperGTest(params)
+            }
+            Test
+        }
+    """)
+
+    # call R function
+    goTerms = gostatsR(list(genes), list(universe), direction, ontology, pvalue)
+
+    # run the plot function on the dataframe
+    # robj.conversion.ri2py(footprint(cuts_R, annot_R))
+    return pd.DataFrame(
+        np.array(robj.r['summary'](goTerms)),
+        index=["GOBPID", "Pvalue", "OddsRatio", "ExpCount", "Count", "Size", "Term"]
+    ).T
+
+
+def exportToREVIGO(df, path):
+    """
+    Export list of GO terms to file, ready to load in ReViGO.
+
+    :param df: `pandas.DataFrame` with "GOBPID" and "Pvalue" columns.
+    :type df: pandas.DataFrame
+    :param path: Path to save output.
+    :type path: str
+    """
+    df[["GOBPID", "Pvalue"]].to_csv(path, sep="\t", index=False)
