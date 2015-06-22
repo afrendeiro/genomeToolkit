@@ -951,3 +951,135 @@ def exportToREVIGO(df, path):
     :type path: str
     """
     df[["GOBPID", "Pvalue"]].to_csv(path, sep="\t", index=False)
+
+
+def gsea(expression, phenotype, database, outputDir, prefix="GSEA.analysis"):
+    """
+    Perform Gene Set Enrichment Analysis.
+
+    :param expression: "RES or GCT" file with expression values per sample.
+    :type expression: str
+    :param phenotype: "CLS" file wiht phenotypes (categories) per sample.
+    :type phenotype: str
+    :param database: "GMT" gene set database file.
+    :type database: str
+    :param outputDir: Output directory.
+    :type outputDir: str
+    :param nPerm: Number of permutations to perform. Default=1000.
+    :type nPerm: int
+    """
+    import os
+    import rpy2.robjects as robj  # for ggplot in R
+    import pandas as pd
+    import pandas.rpy.common as com
+
+    # Make output dir
+    os.system("mkdir -p {0}".format(outputDir))
+
+    # Add trailing slash if not there
+    outputDir = outputDir + "/" if outputDir[-1] != "/" else outputDir
+
+    # R function
+    gseaR = robj.r("""
+        # load library
+        library('gsea')
+
+        gsea.analysis <- function(input.ds, input.cls, gs.db, output.directory, prefix="GSEA.analysis"){
+
+            GSEA(
+                # Input/Output Files :--------------------------------------------------------------------------------------------------------------------------
+                input.ds              = input.ds,        # Input gene expression Affy dataset file in RES or GCT format
+                input.cls             = input.cls,       # Input class vector (phenotype) file in CLS format
+                gs.db                 = gs.db,           # Gene set database in GMT format
+                output.directory      = output.directory,# Directory where to store output and results (default: "")
+                #  Program parameters :-------------------------------------------------------------------------------------------------------------------------
+                doc.string            = prefix,          # Documentation string used as a prefix to name result files (default: "GSEA.analysis")
+                non.interactive.run   = T,               # Run in interactive (i.e. R GUI) or batch (R command line) mode (default: F)
+                reshuffling.type      = "sample.labels", # Type of permutation reshuffling: "sample.labels" or "gene.labels" (default: "sample.labels"
+                nperm                 = 100,             # Number of random permutations (default: 1000)
+                weighted.score.type   =  1,              # Enrichment correlation-based weighting: 0=no weight (KS), 1= weigthed, 2 = over-weigthed (default: 1)
+                nom.p.val.threshold   = -1,              # Significance threshold for nominal p-vals for gene sets (default: -1, no thres)
+                fwer.p.val.threshold  = -1,              # Significance threshold for FWER p-vals for gene sets (default: -1, no thres)
+                fdr.q.val.threshold   = 0.25,            # Significance threshold for FDR q-vals for gene sets (default: 0.25)
+                topgs                 = 20,              # Besides those passing test, number of top scoring gene sets used for detailed reports (default: 10)
+                adjust.FDR.q.val      = TRUE,            # Adjust the FDR q-vals (default: F)
+                gs.size.threshold.min = 15,              # Minimum size (in genes) for database gene sets to be considered (default: 25)
+                gs.size.threshold.max = 500,             # Maximum size (in genes) for database gene sets to be considered (default: 500)
+                reverse.sign          = F,               # Reverse direction of gene list (pos. enrichment becomes negative, etc.) (default: F)
+                preproc.type          = 0,               # Preproc.normalization: 0=none, 1=col(z-score)., 2=col(rank) and row(z-score)., 3=col(rank). (def: 0)
+                random.seed           = 111,             # Random number generator seed. (default: 123456)
+                perm.type             = 0,               # For experts only. Permutation type: 0 = unbalanced, 1 = balanced (default: 0)
+                fraction              = 1.0,             # For experts only. Subsampling fraction. Set to 1.0 (no resampling) (default: 1.0)
+                replace               = F,               # For experts only, Resampling mode (replacement or not replacement) (default: F)
+                save.intermediate.results = F,           # For experts only, save intermediate results (e.g. matrix of random perm. scores) (default: F)
+                OLD.GSEA              = F,               # Use original (old) version of GSEA (default: F)
+                use.fast.enrichment.routine = T          # Use faster routine to compute enrichment for random permutations (default: T)
+            )
+        }
+    """)
+
+    # call R function
+    resultR = gseaR(expression, phenotype, database, outputDir, prefix)
+
+    # convert back to Python
+    result = com.convert_robj(resultR)
+
+    # Return one dataframe for each phenotype
+    return [pd.DataFrame(result["report1"]), pd.DataFrame(result["report2"])]
+
+
+def gseaExpression(df, outputFile):
+    """
+    Export a dataframe of expression values to a "GCT" file used by GSEA.
+
+    :param df: `pandas.DataFrame` where first column are gene names, other columns are expression values for various samples.
+    Column names are sample names.
+    :type df: pandas.DataFrame
+    :param outputFile: Path to file to write to.
+    :type outputFile: str
+    """
+    # Check uniqueness
+    if len(df.columns) != len(df.columns.unique()):
+        raise TypeError("Sample names (columns) are not unique!")
+
+    samples = list(df.columns[1:])
+
+    nGenes = len(df)
+    nSamples = len(df.columns) - 1
+
+    df = df.rename(columns={df.columns[0]: "NAME"})
+    df["Description"] = None
+    df = df[["NAME", "Description"] + samples]
+
+    # Write dataframe to disk
+    df.to_csv(outputFile, sep="\t", index=False)
+
+    # Append two lines two beggining of dataframe
+    with open(outputFile, 'r') as f:
+        content = f.read()
+    with open(outputFile, 'w') as f:
+        f.write("#1.2\n" + "\t".join([str(nGenes), str(nSamples)]) + "\n" + content)
+
+
+def gseaPhenotypes(samples, classes, outputFile):
+    """
+    Export phenotypes to a categorical "CLS" file used by GSEA.
+
+    :param samples: Iterable with sample values.
+    :type samples: iterable
+    :param classes: Iterable with classes of samples. Must be in same order.
+    :type classes: iterable
+    :param outputFile: Path to file to write to.
+    :type outputFile: str
+    """
+    nClasses = len(classes)
+    nSamples = len(samples)
+
+    # Write to file
+    with open(outputFile, 'w') as f:
+        # Three fields, num_samples, num_classes, "1"
+        f.write("\t".join([str(nSamples), str(nClasses), str(1)]) + "\n")
+        # Two or more fields, "#" and all classes
+        f.write("\t".join(["#"] + classes) + "\n")
+        # To which class each sample belongs
+        f.write("\t".join(classes) + "\n")
