@@ -873,7 +873,7 @@ def getReadType(bamFile, n=10):
         return ("SE", readLength)
 
 
-def gostats(genes, universe, direction, ontology, pvalue=0.01, species="Mm"):
+def gostats(genes, universe, direction, ontology, pvalue=0.01, species="Mm", correctPvalue=True):
     """
     Perform gene ontology enrichment with GOstats.
 
@@ -893,14 +893,15 @@ def gostats(genes, universe, direction, ontology, pvalue=0.01, species="Mm"):
     import rpy2.robjects as robj  # for ggplot in R
     import numpy as np
     import pandas as pd
+    from statsmodels.sandbox.stats.multicomp import multipletests
 
     species = species[0].upper() + species[1].lower()
 
     # R function
     gostatsR = robj.r("""
         # load libraries
-        library('GOstats')
-        library('org.Mm.eg.db')
+        suppressPackageStartupMessages(library('GOstats'))
+        suppressPackageStartupMessages(library('org.Mm.eg.db'))
 
         GO.analysis = function(genes, universe, direction, ontology, pvalue=0.01){
 
@@ -918,10 +919,10 @@ def gostats(genes, universe, direction, ontology, pvalue=0.01, species="Mm"):
                     geneIds=genes,
                     universeGeneIds=universe,
                     annotation="org.Mm.eg.db",
-                    ontology="BP",
+                    ontology=ontology,
                     pvalueCutoff=pvalue,
                     conditional=FALSE,
-                    testDirection="over"
+                    testDirection=direction
                 )
                 # run test
                 Test = hyperGTest(params)
@@ -933,12 +934,20 @@ def gostats(genes, universe, direction, ontology, pvalue=0.01, species="Mm"):
     # call R function
     goTerms = gostatsR(list(genes), list(universe), direction, ontology, pvalue)
 
-    # run the plot function on the dataframe
-    # robj.conversion.ri2py(footprint(cuts_R, annot_R))
-    return pd.DataFrame(
+    # Transform into a pandas.DataFrame
+    df = pd.DataFrame(
         np.array(robj.r['summary'](goTerms)),
         index=["GOBPID", "Pvalue", "OddsRatio", "ExpCount", "Count", "Size", "Term"]
     ).T
+
+    # correct p-values
+    if correctPvalue:
+        df["correctedPvalue"] = multipletests([float(i) for i in df["Pvalue"]])[1]
+
+    df['Direction'] = direction
+    df['Ontology'] = ontology
+
+    return df
 
 
 def exportToREVIGO(df, path):
