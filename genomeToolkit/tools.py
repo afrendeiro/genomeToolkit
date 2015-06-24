@@ -1005,7 +1005,7 @@ def gsea(expression, phenotype, database, outputDir, prefix="GSEA.analysis"):
                 doc.string            = prefix,          # Documentation string used as a prefix to name result files (default: "GSEA.analysis")
                 non.interactive.run   = T,               # Run in interactive (i.e. R GUI) or batch (R command line) mode (default: F)
                 reshuffling.type      = "sample.labels", # Type of permutation reshuffling: "sample.labels" or "gene.labels" (default: "sample.labels"
-                nperm                 = 100,             # Number of random permutations (default: 1000)
+                nperm                 = 2,             # Number of random permutations (default: 1000)
                 weighted.score.type   =  1,              # Enrichment correlation-based weighting: 0=no weight (KS), 1= weigthed, 2 = over-weigthed (default: 1)
                 nom.p.val.threshold   = -1,              # Significance threshold for nominal p-vals for gene sets (default: -1, no thres)
                 fwer.p.val.threshold  = -1,              # Significance threshold for FWER p-vals for gene sets (default: -1, no thres)
@@ -1091,4 +1091,28 @@ def gseaPhenotypes(samples, classes, outputFile):
         # Two or more fields, "#" and all classes
         f.write("\t".join(["#"] + classes) + "\n")
         # To which class each sample belongs
-        f.write("\t".join(classes) + "\n")
+        f.write("\t".join(samples) + "\n")
+
+
+def getEnsemblAnnotation(species="hsapiens", filePath=None):
+    from biomart import BiomartServer
+
+    server = BiomartServer("http://www.biomart.org/biomart")
+    ensembl = server.databases["ensembl"]
+    genes = ensembl.datasets["{0}_gene_ensembl".format(species)]
+
+    attributes = ['mgi_symbol'] if species == "mmusculus" else ["hsapiens"]
+    attributes += ['ensembl_gene_id', 'ensembl_transcript_id']
+    response = genes.search({
+        'attributes': attributes
+    })
+
+    results = list()
+    for line in response.iter_lines():
+        results.append(line.split("\t"))
+
+    annotation = pd.DataFrame(results, columns=attributes)
+    if filePath is not None:
+        annotation.to_csv(filePath, index=False)
+    else:
+        return annotation
