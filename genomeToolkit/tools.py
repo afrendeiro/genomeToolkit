@@ -1263,7 +1263,7 @@ def gseaPhenotypes(samples, classes, outputFile):
         # Three fields, num_samples, num_classes, "1"
         f.write("\t".join([str(nSamples), str(nClasses), str(1)]) + "\n")
         # Two or more fields, "#" and all classes
-        f.write("\t".join(["#"] + classes) + "\n")
+        f.write("\t".join(["#"] + list(set(classes))) + "\n")
         # To which class each sample belongs
         f.write("\t".join(samples) + "\n")
 
