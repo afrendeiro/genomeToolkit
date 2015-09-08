@@ -454,6 +454,45 @@ def getPWMscores(regions, PWM, fasta, regionsFile):
     return pd.DataFrame(scores, index=names, columns=range(-990, 990))
 
 
+def truncate_interval(interval, center=True, n=1):
+    """
+    Truncate genomic interval to a number of basepairs from its center (if center is True) or its start.
+
+    :param interval: a pybedtools.Interval object.
+    :type interval: pybedtools.Interval
+    :param center: If interval should be truncated to its center position
+    :type center: bool
+    :param n: Number of basepairs to truncate interval to.
+    :type n: int
+    :returns: Truncated pybedtools.Interval object.
+    :rtype: pybedtools.Interval
+    """
+    if center:
+        center = ((interval.end - interval.start) / 2) + interval.start
+        interval.start = center
+    interval.end = interval.start + n
+    return interval
+
+
+def bedtools_interval_to_genomic_interval(interval):
+    """
+    Given a pybedtools.Interval object, returns a HTSeq.GenomicInterval object.
+
+    :param interval: a pybedtools.Interval object.
+    :type interval: pybedtools.Interval
+    :returns: HTSeq.GenomicInterval object.
+    :rtype: HTSeq.GenomicInterval
+    """
+    import HTSeq
+
+    if interval.strand == "+" or interval.strand == 0 or interval.strand == str(0):
+        return HTSeq.GenomicInterval(interval.chrom, interval.start, interval.end, "+")
+    elif interval.strand == "-" or interval.strand == 0 or interval.strand == str(1):
+        return HTSeq.GenomicInterval(interval.chrom, interval.start, interval.end, "-")
+    else:
+        return HTSeq.GenomicInterval(interval.chrom, interval.start, interval.end)
+
+
 def centipedeCallFootprints(cuts, annot):
     """
     Call footprints.
@@ -513,6 +552,141 @@ def centipedePlotFootprintModel(cuts, annot):
 
     # run the plot function on the dataframe
     return np.ndarray.flatten(robj.conversion.ri2py(footprint(cuts_R, annot_R)))
+
+
+def centipede_footprint(bed_file, bam_file, sites, sample_name, plots_dir, fragmentsize=1, orientation=True, duplicates=True, strand_specific=True):
+    """
+    Gets read coverage in genomic intervals. Passes coverage to centipede_call_footprints and returns posterior probabilities.
+
+    :param bed_file: Bed file.
+    :type bed_file: str
+    :param bam: HTSeq.BAM_Reader object, must be sorted and indexed with .bai file.
+    :type bam: HTSeq.BAM_Reader
+    :type fragmentsize: int
+    :type stranded: bool
+    :type duplicates: bool
+    :returns: OrderedDict with regionName:numpy.array(coverage)
+    :rtype: collections.OrderedDict
+    """
+    import pybedtools
+    import os
+    import HTSeq
+    import numpy as np
+
+    # read in bedfile
+    motifs = pybedtools.BedTool(bed_file)
+    # get motif name
+    motif_name = os.path.basename(bed_file.split(".")[0])
+    # get motif length (length of first interval)
+    motif_length = motifs[0].length
+
+    # convert intervals to HTSeq.GenomicInterval
+    intervals = map(bedtools_interval_to_genomic_interval, motifs)
+
+    # Handle bam file
+    bam = HTSeq.BAM_Reader(bam_file)
+
+    # exclude bad chroms
+    chroms_exclude = ['chrM', 'chrX', 'chrY']
+
+    # get dimensions of matrix to store profiles of Tn5 transposition
+    n = len(intervals)
+    m = intervals[0].length
+
+    # create empty matrix
+    if not strand_specific:
+        coverage = np.zeros((n, m), dtype=np.float64)
+    else:
+        # if "strand_specific", get signal for both strands independently, but concatenated
+        coverage = np.zeros((n, m * 2), dtype=np.float64)
+
+    # Loop through intervals, get coverage, increment matrix count
+    for i, feature in enumerate(intervals):
+        # counter just to track
+        if i % 1000 == 0:
+            print(n - i)
+
+        # Check if feature is not in bad chromosomes
+        if feature.chrom in chroms_exclude:
+            continue
+
+        # Fetch alignments in interval
+        for aln in bam[feature]:
+            # check it's aligned
+            if not aln.aligned:
+                continue
+
+            # check if duplicate
+            if not duplicates and aln.pcr_or_optical_duplicate:
+                continue
+
+            aln.iv.length = fragmentsize  # adjust reads to specified size
+
+            # get position relative to window if required (motif-oriented)
+            if orientation:
+                if feature.strand == "+" or feature.strand == ".":
+                    start_in_window = aln.iv.start - feature.start - 1
+                    end_in_window = aln.iv.end - feature.start - 1
+                else:
+                    start_in_window = feature.length - abs(feature.start - aln.iv.end) - 1
+                    end_in_window = feature.length - abs(feature.start - aln.iv.start) - 1
+            else:
+                start_in_window = aln.iv.start - feature.start - 1
+                end_in_window = aln.iv.end - feature.start - 1
+
+            # check fragment is within window; this is because of fragmentsize adjustment
+            if start_in_window < 0 or end_in_window > feature.length:
+                continue
+
+            # add +1 to all positions overlapped by read within window
+            if not strand_specific:
+                coverage[i, start_in_window: end_in_window] += 1
+            else:
+                if aln.iv.strand == "+":
+                    coverage[i, start_in_window: end_in_window] += 1
+                else:
+                    coverage[i, m + start_in_window: m + end_in_window] += 1
+    # Call footprints, get posterior probabilities
+    try:
+        probs = centipede_call_footprints(coverage, np.ones([len(coverage), 1]), motif_length, os.path.join(plots_dir, sample_name + "." + motif_name + ".pdf"))
+        if len(probs) != len(coverage):
+            probs = np.zeros(len(coverage))
+    except:
+        # if error, return zeros
+        probs = np.zeros(len(coverage))
+    return probs
+
+
+def centipede_call_footprints(cuts, annot, motif_length, plot):
+    """
+    Call footprints.
+    Requires dataframe with cuts and dataframe with annotation (2> cols).
+    """
+    import rpy2.robjects as robj  # for ggplot in R
+    import rpy2.robjects.pandas2ri  # for R dataframe conversion
+    import rpy2.robjects.numpy2ri  # for R numpy objects conversion
+
+    robj.pandas2ri.activate()
+
+    # Plot with R
+    footprint = robj.r("""
+    library("CENTIPEDE")
+
+    function(cuts, annot, plotFile, mLen) {
+        centFit <- fitCentipede(
+            Xlist = list(as.matrix(cuts)),
+            Y = as.matrix(annot),
+            sweeps = 1000
+        )
+        pdf(plotFile)
+            plotProfile(centFit$LambdaParList[[1]],Mlen=mLen)
+        dev.off()
+        return(centFit$PostPr)
+    }
+    """)
+
+    # run the plot function on the dataframe
+    return footprint(cuts, annot, plot, motif_length).flatten()
 
 
 def topPeakOverlap(peakA, peakB, percA=100, percB=100):
@@ -1096,6 +1270,7 @@ def gseaPhenotypes(samples, classes, outputFile):
 
 def getEnsemblAnnotation(species="hsapiens", filePath=None):
     from biomart import BiomartServer
+    import pandas as pd
 
     server = BiomartServer("http://www.biomart.org/biomart")
     ensembl = server.databases["ensembl"]
@@ -1116,3 +1291,70 @@ def getEnsemblAnnotation(species="hsapiens", filePath=None):
         annotation.to_csv(filePath, index=False)
     else:
         return annotation
+
+
+def run_lola(bed_files, universe_file, output_folder):
+    import rpy2.robjects as robj
+
+    lola = robj.r("""
+        function(bedFiles, universeFile, outputFolder) {
+            library("bedr")
+            library("LOLA")
+
+            userUniverse  <- bedr::bed_to_granges(universeFile)
+
+            dbPath = "/data/groups/lab_bock/shared/resources/regions/LOLACore/hg19/"
+
+            dbPath = "/data/groups/lab_bock/shared/resources/regions/customRegionDB/hg19/"
+            regionDB = loadRegionDB(dbPath)
+
+            if (typeof(bedFiles) == "character") {
+                userSet <- bedr::bed_to_granges(bedFiles)
+                lolaResults = runLOLA(userSet, userUniverse, regionDB, cores=12)
+                lolaResults[order(support, decreasing=TRUE), ]
+                writeCombinedEnrichment(lolaResults, outFolder=outputFolder)
+            } else if (typeof(bedFiles) == "double") {
+                for (bedFile in bedFiles) {
+                    userSet <- bedr::bed_to_granges(bedFile)
+                    lolaResults = runLOLA(userSet, userUniverse, regionDB, cores=12)
+                    lolaResults[order(support, decreasing=TRUE), ]
+                    writeCombinedEnrichment(lolaResults, outFolder=outputFolder)
+                }
+            }
+        }
+    """)
+
+    # convert the pandas dataframe to an R dataframe
+    lola(bed_files, universe_file, output_folder)
+
+
+def normalize_quantiles(array):
+    """
+    array with samples in the columns and probes across the rows
+    """
+    import numpy as np
+    n_array = np.zeros_like(array)
+
+    sort_order = np.argsort(array, axis=0)
+
+    n_array[sort_order, np.arange(array.shape[1])] = np.mean(array[sort_order, np.arange(array.shape[1])], axis=1)[:, np.newaxis]
+
+    return n_array
+
+
+def normalize_quantiles_r(array):
+    """
+    # install package
+    # R
+    # source('http://bioconductor.org/biocLite.R')
+    # biocLite('preprocessCore')
+    """
+    import numpy as np
+
+    import rpy2.robjects as robjects
+    import rpy2.robjects.numpy2ri
+    rpy2.robjects.numpy2ri.activate()
+
+    robjects.r('require("preprocessCore")')
+    normq = robjects.r('normalize.quantiles')
+    return np.array(normq(array))
